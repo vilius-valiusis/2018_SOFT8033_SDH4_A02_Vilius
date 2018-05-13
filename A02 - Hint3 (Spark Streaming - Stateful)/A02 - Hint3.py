@@ -14,12 +14,50 @@ import time
 from pyspark.streaming import StreamingContext
 import json
 
+def aggregate(cuisine):
+    name = cuisine[0]
+    score = 0
+    neg_rev = 0
+    reviews = list(cuisine[1])
+    total_rev = len(reviews)
+    for v in reviews:
+      if v["evaluation"] == "Positive":
+        score += v["points"]
+      elif v["evaluation"] == "Negative":
+        score -= v["points"]
+        neg_rev += 1
+    avg_pnts = float(score)/total_rev
+    return (name,(total_rev, neg_rev, score, avg_pnts))
+
+
+# Proccess data per streamed batch
+# Note: Data is automatically persisted 
+def process_batch(data_rdd, percentage_f):
+  if data_rdd.count() > 0:
+    # Group all reviews by cuisine
+    grouped_rdd = data_rdd.groupBy(lambda x: x['cuisine'])
+    # Agreggate values for each cuisine 
+    aggregated_rdd = grouped_rdd.map(aggregate)
+    # Get total average reviews
+    avg = float(data_rdd.count()) / grouped_rdd.count()
+    # Filter based on total amount of reviews and negative reviews percentage
+    filtered_rdd = aggregated_rdd.filter(lambda x: x[1][0] >= avg and float(x[1][1])/x[1][0] < percentage_f)
+    # Sort results descendingly by average points per cuisine
+    sorted_rdd = filtered_rdd.sortBy(lambda x: -x[1][3])                              
+    return sorted_rdd
 
 # ------------------------------------------
 # FUNCTION my_model
 # ------------------------------------------
 def my_model(ssc, monitoring_dir, result_dir, percentage_f, window_duration, sliding_duration):
-    pass
+    # Stream data from the monitoring dir and convert it from strings to a dictionary
+    stream = ssc.textFileStream(monitoring_dir).map(json.loads)
+    # Read data in windows of 40msc allowing for 4 files per read
+    window = stream.window(window_duration * time_step_interval, sliding_duration * time_step_interval)
+    # Transform data in stream using rdd functionality
+    output = window.transform(lambda x: process_batch(x, percentage_f))
+    # Save results as text files 
+    output.saveAsTextFiles(result_dir)
 
 # ------------------------------------------
 # FUNCTION create_ssc
